@@ -1,0 +1,282 @@
+// Inclue std out library
+#include<stdlib.h>
+
+// Include the SoftwareSerial library
+#include <SoftwareSerial.h>
+
+// Iclude i2C library
+#include <Wire.h>
+
+// Include the Adafruit DHT library
+#include "DHT.h"
+
+// Include the SFE BMP180 library
+#include <SFE_BMP180.h>
+
+// Include the LCD display library
+#include <LiquidCrystal.h>
+
+// Pin the DHT22 is connected to
+#define DHTPIN 2
+
+// Specify the model being used, DHT 22  (AM2302)
+#define DHTTYPE DHT22
+
+// Define your AP details
+#define SSID "PlusnetWireless9D8DEF"
+#define PASS "E4881FC606"
+
+// Define the thingspeak IP
+#define IP "184.106.153.149"
+
+// Define get command used to talk to thingspeak
+String GET = "GET /update?key=ZIAR9UA53A9ZAPV5";
+
+
+//comment out to remove debug msgs
+#define DEBUG FALSE
+
+// Define the pins to be used for SoftwareSerial
+#define _rxpin      2
+#define _txpin      3
+SoftwareSerial debug( _rxpin, _txpin );
+
+// Initialize DHT sensor for normal 16mhz Arduino
+DHT dht(DHTPIN, DHTTYPE);
+
+// Initialise the LCD display pins
+
+LiquidCrystal lcd(12, 11, 6, 5, 4, 3);
+
+// Create an SFE_BMP180 object called pressure
+SFE_BMP180 pressure;
+
+// Define the altitude of the cuurent location in meters, Earlswood Surrey is 97m
+#define ALTITUDE 97.0
+
+// Create float variables for humidity and temp.
+float val_Humidity;
+float val_Temp;
+float val_Pres;
+int val_Light;
+int lightPin = 0;
+
+
+void setup() {
+  // Set the baud rate for hardware serial
+  Serial.begin(9600); 
+
+  // Confirm the precense of the BMP180
+  if (pressure.begin())
+    Serial.println("BMP180 init success");
+  else
+  {
+    // Oops, something went wrong, this is usually a connection problem, check pin connections to BMP180.
+
+    Serial.println("BMP180 init fail\n\n");
+    
+    // If BMP fails to initialise pause forever.
+    while(1); 
+  }
+  
+  // Set the LCD's number of columns and rows.
+  lcd.begin(16, 2);
+  
+  // Setup the DHT22 sensor
+  dht.begin();
+  
+  // Send AT command to make sure the ESP8266 is ready to receive data
+  Serial.println("AT");
+  delay(5000);
+  if(Serial.find("OK"))
+  {
+    Serial.println("RECEIVED: OK\nData ready to sent!");
+    
+    // If response from ESP8266 is "OK" connect to WiFi
+    connectWiFi();
+  }
+  else
+  {
+    Serial.println("Seems something is FUBAR!!!");
+  }
+}
+
+void loop() {
+  
+  // Declare variables for BMP180, temp, Pressure, pressure sealevel and altitude
+  char status;
+  double T,P,p0,a;
+  
+  // Reading temperature or humidity takes about 250 milliseconds!
+  // Sensor readings may also be up to 2 seconds 'old' (its a very slow sensor)
+  float val_Humidity = dht.readHumidity();
+  
+  // Read temperature as Celsius
+  float val_TempC = dht.readTemperature();
+  
+  // Read the light in the room
+  val_Light = analogRead(lightPin);
+  
+  // Covert the interger val_Light to a string
+  String light = String(val_Light);
+  
+  // Check if any reads failed and exit early (to try again).
+  if (isnan(val_Humidity) || isnan(val_TempC)) {
+    Serial.println("Failed to read from DHT sensor!");
+    return;
+  }
+
+  // You must first get a temperature measurement to perform a pressure reading.
+  
+  // Start a temperature measurement:
+  // If request is successful, the number of ms to wait is returned.
+  // If request is unsuccessful, 0 is returned.
+
+  status = pressure.startTemperature();
+  if (status != 0)
+  {
+    // Wait for the measurement to complete:
+    delay(status);
+
+    // Retrieve the completed temperature measurement:
+    // Note that the measurement is stored in the variable T.
+    // Function returns 1 if successful, 0 if failure.
+
+    status = pressure.getTemperature(T);
+    if (status != 0)
+    {
+      
+      // Start a pressure measurement:
+      // The parameter is the oversampling setting, from 0 to 3 (highest res, longest wait).
+      // If request is successful, the number of ms to wait is returned.
+      // If request is unsuccessful, 0 is returned.
+
+      status = pressure.startPressure(3);
+      if (status != 0)
+      {
+        // Wait for the measurement to complete:
+        delay(status);
+
+        // Retrieve the completed pressure measurement:
+        // Note that the measurement is stored in the variable P.
+        // Note also that the function requires the previous temperature measurement (T).
+        // (If temperature is stable, you can do one temperature measurement for a number of pressure measurements.)
+        // Function returns 1 if successful, 0 if failure.
+
+        status = pressure.getPressure(P,T);
+        if (status != 0)
+        {
+
+          // The pressure sensor returns abolute pressure, which varies with altitude.
+          // To remove the effects of altitude, use the sealevel function and your current altitude.
+          // This number is commonly used in weather reports.
+          // Parameters: P = absolute pressure in mb, ALTITUDE = current altitude in m.
+          // Result: p0 = sea-level compensated pressure in mb
+
+          p0 = pressure.sealevel(P,ALTITUDE); // we're at 97m Earlswood Surrey;
+          val_Pres = p0;
+
+          // On the other hand, if you want to determine your altitude from the pressure reading,
+          // use the altitude function along with a baseline pressure (sea-level or other).
+          // Parameters: P = absolute pressure in mb, p0 = baseline pressure in mb.
+          // Result: a = altitude in m.
+
+          a = pressure.altitude(P,p0);
+
+        }
+        else Serial.println("error retrieving pressure measurement\n");
+      }
+      else Serial.println("error starting pressure measurement\n");
+    }
+    else Serial.println("error retrieving temperature measurement\n");
+  }
+  else Serial.println("error starting temperature measurement\n");
+  
+  // Set the char buffer
+  char buffer[10];
+  String temp = dtostrf(val_TempC, 4, 1, buffer);
+  String hum = dtostrf(val_Humidity, 4, 1, buffer);
+  String pres = dtostrf(val_Pres, 4, 1, buffer);
+  
+  // Set the cursor to column 0, line 1;
+  lcd.setCursor(0, 0);
+  
+  // Print temp in Celsius to serial
+  lcd.print("Temp: ");
+  lcd.print(val_TempC);
+  
+  lcd.setCursor(0, 1);
+  // Print humidity
+  lcd.print("Humidity: ");
+  lcd.print(val_Humidity);
+  
+  // Send info to function to u[date thingspeak
+  updateTS(temp, hum, pres, light);
+  delay(10000);
+}
+
+void updateTS(String temp, String hum, String pres, String light)
+{
+  String cmd = "AT+CIPSTART=\"TCP\",\"";
+  cmd += IP;
+  cmd += "\",80";
+  Serial.println(cmd);
+  delay(2000);
+  if(Serial.find("Error")){
+    return;
+  }
+  cmd = GET + "&field1=" + temp + "&field2=" + hum + "&field3=" + pres +"&field4=" + light +"\r\n";
+  Serial.print("AT+CIPSEND=");
+  Serial.println(cmd.length());
+  if(Serial.find(">")){
+    Serial.print(cmd);
+  }else{
+    Serial.println("AT+CIPCLOSE");
+  }
+}
+
+void sendDebug(String cmd)
+{
+  debug.print("SEND: ");
+  debug.println(cmd);
+  Serial.println(cmd);
+}
+
+boolean connectWiFi()
+{
+  // Set the mode of the SESP8266 if '3' it is both client and AP
+  Serial.println("AT+CWMODE=1"); 
+  delay(2000);
+  
+  //Connect to Router with AT+CWJAP="SSID","Password";
+  // Check if connected with AT+CWJAP?
+  String cmd="AT+CWJAP=\""; // Join accespoint
+  cmd+=SSID;
+  cmd+="\",\"";
+  cmd+=PASS;
+  cmd+="\"";
+  sendDebug(cmd);
+  delay(5000);
+  if(Serial.find("OK"))
+  {
+    Serial.println("RECEIVED: OK");
+    return true;
+  }
+  else
+  {
+    Serial.println("RECEIVED: Error");
+    return false;
+  }
+
+  cmd = "AT+CIPMUX=0";// Set Single connection
+  sendDebug( cmd );
+  if( Serial.find( "Error") )
+  {
+    Serial.print( "RECEIVED: Error" );
+    return false;
+  }
+}
+
+
+
+
